@@ -1,0 +1,40 @@
+let APPROVED_TAG = null; // <-- start with no tag registered
+
+async function startScan() {
+  if (!("NDEFReader" in window)) {
+    alert("NFC not supported on this device.");
+    return;
+  }
+
+  const ndef = new NDEFReader();
+
+  try {
+    await ndef.scan();
+    document.getElementById("status").innerText = "Tap NFC tag...";
+
+    ndef.onreading = async event => {
+      const id = event.serialNumber;
+
+      if (!APPROVED_TAG) {
+        // Register first scanned tag
+        APPROVED_TAG = id;
+        localStorage.setItem("registeredTag", APPROVED_TAG);
+        unlock();
+        alert("Tag registered and vault unlocked ✅");
+      } else if (id === APPROVED_TAG) {
+        unlock();
+      } else {
+        document.getElementById("status").innerText = "❌ Wrong Tag";
+      }
+    };
+
+  } catch (err) {
+    alert("Error: " + err);
+  }
+}
+
+// Restore registered tag on load
+window.addEventListener("load", () => {
+  const savedTag = localStorage.getItem("registeredTag");
+  if (savedTag) APPROVED_TAG = savedTag;
+});
