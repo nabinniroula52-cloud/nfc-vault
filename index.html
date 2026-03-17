@@ -1,0 +1,181 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>🔐 NFC Vault Fun</title>
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<style>
+body {margin:0;padding:0;background:#0f172a;color:white;font-family:sans-serif;}
+.container {padding:15px; max-width:600px;margin:auto;}
+h1 {text-align:center;}
+button,input,textarea {
+    width:100%;padding:12px;margin:5px 0;border:none;border-radius:8px;font-size:16px;}
+button {background:#22c55e;color:black;font-weight:bold;}
+textarea {background:#111;color:white;height:150px;}
+.file-list {background:#111;padding:10px;border-radius:8px;max-height:200px;overflow-y:auto;}
+.file-item {display:flex;align-items:center;margin:5px 0;}
+.file-item img {max-width:60px;margin-right:10px;cursor:pointer;}
+.file-item button {background:red;color:white;margin-left:5px;}
+.card {background:#111;padding:15px;border-radius:12px;margin-top:15px;}
+ul {list-style:none;padding:0;}
+</style>
+</head>
+
+<body>
+<div class="container">
+<h1>🔐 NFC Vault</h1>
+<p id="status">Locked</p>
+
+<button onclick="startScan()">Unlock with NFC</button>
+
+<input type="password" id="backupPass" placeholder="Backup Password">
+<button onclick="backupLogin()">Unlock with Password</button>
+
+<div id="vault" style="display:none;">
+<textarea id="notes"></textarea>
+
+<input type="file" id="fileInput" multiple>
+<button onclick="addFiles()">Add Files</button>
+
+<div class="file-list" id="fileList"></div>
+
+<button onclick="saveAndLock()">Save & Lock 🔒</button>
+</div>
+</div>
+
+<script>
+let APPROVED_TAGS=[];
+let fileData=[];
+let unlocked=false;
+let unlockLog=[];
+
+const PASSWORD="04292002";
+
+// Load saved
+if(localStorage.getItem("tags")) APPROVED_TAGS=JSON.parse(localStorage.getItem("tags"));
+if(localStorage.getItem("files")) fileData=JSON.parse(localStorage.getItem("files"));
+if(localStorage.getItem("notes")) document.getElementById("notes").value=localStorage.getItem("notes");
+
+// NFC unlock
+async function startScan(){
+if(!("NDEFReader" in window)){alert("No NFC");return;}
+const ndef=new NDEFReader();
+await ndef.scan();
+document.getElementById("status").innerText="Tap tag...";
+
+ndef.onreading=e=>{
+let id=e.serialNumber.replace(/:/g,'').toUpperCase();
+
+if(APPROVED_TAGS.length===0){
+APPROVED_TAGS.push(id);
+localStorage.setItem("tags",JSON.stringify(APPROVED_TAGS));
+alert("First tag registered");
+unlock("Owner NFC");
+return;
+}
+
+if(APPROVED_TAGS.includes(id)){
+unlock("NFC Tag");
+}else{
+document.getElementById("status").innerText="❌ Wrong Tag";
+}
+};
+}
+
+// Backup login
+function backupLogin(){
+const input=document.getElementById("backupPass").value;
+if(input===PASSWORD){
+unlock("Backup Login");
+}else{
+alert("Wrong password ❌");
+}
+}
+
+// Unlock
+function unlock(method){
+unlocked=true;
+document.getElementById("vault").style.display="block";
+document.getElementById("status").innerText="✅ Unlocked ("+method+")";
+loadVault();
+logUnlock(method);
+}
+
+// Lock + save
+function saveAndLock(){
+saveVault();
+lock();
+}
+
+function lock(){
+unlocked=false;
+document.getElementById("vault").style.display="none";
+document.getElementById("status").innerText="🔒 Locked";
+}
+
+// Save/load
+function saveVault(){
+localStorage.setItem("notes",document.getElementById("notes").value);
+localStorage.setItem("files",JSON.stringify(fileData));
+}
+
+function loadVault(){
+document.getElementById("notes").value=localStorage.getItem("notes")||"";
+fileData=JSON.parse(localStorage.getItem("files")||"[]");
+renderFiles();
+}
+
+// Files
+function addFiles(){
+const input=document.getElementById("fileInput");
+for(const f of input.files){
+const reader=new FileReader();
+reader.onload=e=>{
+fileData.push({name:f.name,type:f.type,content:e.target.result});
+renderFiles();
+};
+reader.readAsDataURL(f);
+}
+}
+
+function renderFiles(){
+const list=document.getElementById("fileList");
+list.innerHTML="";
+fileData.forEach((f,i)=>{
+const div=document.createElement("div");
+div.className="file-item";
+
+if(f.type.startsWith("image/")){
+const img=document.createElement("img");
+img.src=f.content;
+img.onclick=()=>window.open(f.content);
+div.appendChild(img);
+}
+
+const link=document.createElement("a");
+link.href=f.content;
+link.download=f.name;
+link.innerText=f.name;
+div.appendChild(link);
+
+const del=document.createElement("button");
+del.innerText="X";
+del.onclick=()=>{
+fileData.splice(i,1);
+saveVault();
+renderFiles();
+};
+div.appendChild(del);
+
+list.appendChild(div);
+});
+}
+
+// Logs
+function logUnlock(method){
+unlockLog.push({method,time:new Date().toLocaleString()});
+localStorage.setItem("log",JSON.stringify(unlockLog));
+}
+</script>
+</body>
+</html>
