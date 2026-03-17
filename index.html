@@ -1,0 +1,381 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>NFC Vault - Full Features</title>
+<style>
+body {
+    background: #0f172a;
+    color: white;
+    font-family: sans-serif;
+    text-align: center;
+    padding: 20px;
+}
+textarea {
+    width: 90%;
+    height: 150px;
+    margin-top: 15px;
+    background: #111;
+    color: white;
+    border: none;
+    padding: 10px;
+}
+button {
+    padding: 10px 20px;
+    margin: 10px;
+    border: none;
+    background: #22c55e;
+    color: black;
+    font-weight: bold;
+}
+input[type="file"], input[type="text"] {
+    margin: 10px 0;
+    color: white;
+}
+.file-list {
+    text-align: left;
+    margin: 10px auto;
+    width: 90%;
+    max-height: 200px;
+    overflow-y: auto;
+    background: #111;
+    padding: 10px;
+}
+.file-item {
+    margin: 5px 0;
+}
+.file-item img {
+    max-width: 80px;
+    vertical-align: middle;
+    margin-right: 5px;
+}
+.file-item a {
+    color: #22c55e;
+    text-decoration: none;
+}
+#nfcManager, #logManager {
+    margin-top: 20px;
+    text-align: left;
+    width: 90%;
+    margin-left: auto;
+    margin-right: auto;
+    background: #111;
+    padding: 10px;
+}
+#nfcManager ul, #logManager ul {
+    list-style: none;
+    padding-left: 0;
+}
+#nfcManager li, #logManager li {
+    margin: 5px 0;
+}
+#nfcManager li button {
+    margin-left: 10px;
+    padding: 2px 6px;
+    background: red;
+    color: white;
+}
+#logManager li span {
+    color: #22c55e;
+}
+</style>
+</head>
+<body>
+
+<h1>🔐 NFC Vault</h1>
+<p id="status">Locked</p>
+<button onclick="startScan()">Unlock with NFC</button>
+
+<div id="vault" style="display:none;">
+    <textarea id="notes" placeholder="Type your notes here..."></textarea><br>
+    <input type="file" id="fileInput" multiple><br>
+    <button onclick="addFiles()">Add Files</button>
+    <div class="file-list" id="fileList"></div>
+    <button onclick="saveVault()">Save Vault</button>
+    <button onclick="lock()">Lock Vault 🔒</button>
+    <button onclick="clearVault()" style="background:red;color:white;">Clear Vault 🗑️</button>
+
+    <div id="nfcManager">
+        <h3>🔑 Manage NFC Tags</h3>
+        <input type="text" id="tagNickname" placeholder="Nickname for new tag">
+        <button onclick="scanForNewTag()">Register New Tag</button>
+        <ul id="tagList"></ul>
+    </div>
+
+    <div id="logManager">
+        <h3>📜 Unlock Log</h3>
+        <button onclick="renderLog()">Refresh Log</button>
+        <ul id="logList"></ul>
+    </div>
+</div>
+
+<script>
+let APPROVED_TAGS = [];
+let unlocked = false;
+let db;
+let fileData = [];
+let unlockLog = [];
+
+// Initialize IndexedDB
+function initDB() {
+    return new Promise((resolve, reject) => {
+        const request = indexedDB.open("vaultDB", 1);
+        request.onerror = () => reject("IndexedDB error");
+        request.onsuccess = () => { db = request.result; resolve(); };
+        request.onupgradeneeded = (e) => {
+            db = e.target.result;
+            if (!db.objectStoreNames.contains("vault")) {
+                db.createObjectStore("vault", { keyPath: "id" });
+            }
+        };
+    });
+}
+
+async function saveToDB(id, data) {
+    return new Promise((resolve, reject) => {
+        const tx = db.transaction("vault", "readwrite");
+        const store = tx.objectStore("vault");
+        store.put({ id, data });
+        tx.oncomplete = () => resolve();
+        tx.onerror = () => reject("DB write error");
+    });
+}
+
+async function loadFromDB(id) {
+    return new Promise((resolve, reject) => {
+        const tx = db.transaction("vault", "readonly");
+        const store = tx.objectStore("vault");
+        const request = store.get(id);
+        request.onsuccess = () => resolve(request.result ? request.result.data : null);
+        request.onerror = () => reject("DB read error");
+    });
+}
+
+// Encryption
+async function getKey() {
+    const enc = new TextEncoder();
+    return crypto.subtle.importKey(
+        "raw",
+        enc.encode("super-secret-key-123"),
+        { name: "AES-GCM" },
+        false,
+        ["encrypt","decrypt"]
+    );
+}
+
+async function encrypt(text) {
+    const key = await getKey();
+    const iv = crypto.getRandomValues(new Uint8Array(12));
+    const encoded = new TextEncoder().encode(text);
+    const cipher = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, key, encoded);
+    return { iv: Array.from(iv), data: Array.from(new Uint8Array(cipher)) };
+}
+
+async function decrypt(iv, data) {
+    const key = await getKey();
+    const decrypted = await crypto.subtle.decrypt(
+        { name: "AES-GCM", iv: new Uint8Array(iv) },
+        key,
+        new Uint8Array(data)
+    );
+    return new TextDecoder().decode(decrypted);
+}
+
+// Load saved tags and log
+const savedTags = localStorage.getItem("approvedTags");
+if (savedTags) APPROVED_TAGS = JSON.parse(savedTags);
+const savedLog = localStorage.getItem("unlockLog");
+if (savedLog) unlockLog = JSON.parse(savedLog);
+
+// NFC scan
+async function startScan() {
+    if (!("NDEFReader" in window)) { alert("NFC not supported"); return; }
+    const ndef = new NDEFReader();
+    try {
+        await ndef.scan();
+        document.getElementById("status").innerText = "Tap NFC tag...";
+        ndef.onreading = async event => {
+            const id = event.serialNumber.replace(/:/g,'').toUpperCase();
+            const tag = APPROVED_TAGS.find(t => t.id === id);
+            if (tag) {
+                await logUnlock(tag.nickname);
+                unlock();
+            } else {
+                document.getElementById("status").innerText = "❌ Wrong Tag";
+            }
+        };
+    } catch(e) { alert("Error: "+e); }
+}
+
+// Unlock vault
+async function unlock() {
+    unlocked = true;
+    document.getElementById("vault").style.display = "block";
+    document.getElementById("status").innerText = "✅ Unlocked";
+    await loadVault();
+    renderTagList();
+    renderLog();
+}
+
+// Manual lock
+function lock() {
+    unlocked = false;
+    document.getElementById("vault").style.display = "none";
+    document.getElementById("notes").value = "";
+    fileData = [];
+    document.getElementById("fileList").innerHTML = "";
+    document.getElementById("status").innerText = "🔒 Locked";
+}
+
+// File handling
+function addFiles() {
+    const input = document.getElementById("fileInput");
+    for (const f of input.files) {
+        const reader = new FileReader();
+        reader.onload = e => {
+            fileData.push({name: f.name, type: f.type, contentBase64: e.target.result});
+            renderFileList();
+        };
+        reader.readAsDataURL(f);
+    }
+    input.value = "";
+}
+
+function renderFileList() {
+    const list = document.getElementById("fileList");
+    list.innerHTML = "";
+    for (const f of fileData) {
+        const div = document.createElement("div");
+        div.className = "file-item";
+        if (f.type.startsWith("image/")) {
+            const img = document.createElement("img");
+            img.src = f.contentBase64;
+            div.appendChild(img);
+        }
+        const link = document.createElement("a");
+        link.href = f.contentBase64;
+        link.download = f.name;
+        link.innerText = f.name + " ⬇️";
+        div.appendChild(link);
+        list.appendChild(div);
+    }
+}
+
+// Save vault
+async function saveVault() {
+    if (!unlocked) return;
+    await initDB();
+    const notesText = document.getElementById("notes").value;
+    const encryptedNotes = await encrypt(notesText);
+    await saveToDB("notes", encryptedNotes);
+    for (const f of fileData) {
+        const encryptedFile = await encrypt(f.contentBase64);
+        await saveToDB(f.name, {name: f.name, type: f.type, content: encryptedFile});
+    }
+    alert("Vault Saved 🔐");
+}
+
+// Load vault
+async function loadVault() {
+    await initDB();
+    const savedNotes = await loadFromDB("notes");
+    if (savedNotes) {
+        const notesText = await decrypt(savedNotes.iv, savedNotes.data);
+        document.getElementById("notes").value = notesText;
+    }
+    const tx = db.transaction("vault", "readonly");
+    const store = tx.objectStore("vault");
+    store.openCursor().onsuccess = async e => {
+        const cursor = e.target.result;
+        if (cursor) {
+            const record = cursor.value;
+            if (record.id !== "notes") {
+                const content = await decrypt(record.data.content.iv, record.data.content.data);
+                fileData.push({name: record.data.name, type: record.data.type, contentBase64: content});
+            }
+            cursor.continue();
+        }
+        renderFileList();
+    };
+}
+
+// NFC Tag Manager
+function renderTagList() {
+    const list = document.getElementById("tagList");
+    list.innerHTML = "";
+    APPROVED_TAGS.forEach((tag, index) => {
+        const li = document.createElement("li");
+        li.innerText = (tag.nickname || "••••••" + tag.id.slice(-6));
+        const btn = document.createElement("button");
+        btn.innerText = "Remove";
+        btn.onclick = () => removeTag(index);
+        li.appendChild(btn);
+        list.appendChild(li);
+    });
+}
+
+async function scanForNewTag() {
+    const nickname = document.getElementById("tagNickname").value || "Unnamed";
+    if (!("NDEFReader" in window)) { alert("NFC not supported"); return; }
+    const ndef = new NDEFReader();
+    try {
+        await ndef.scan();
+        alert("Tap the new NFC tag to register...");
+        ndef.onreading = event => {
+            const id = event.serialNumber.replace(/:/g,'').toUpperCase();
+            if (!APPROVED_TAGS.find(t => t.id === id)) {
+                APPROVED_TAGS.push({id, nickname});
+                localStorage.setItem("approvedTags", JSON.stringify(APPROVED_TAGS));
+                renderTagList();
+                alert("Tag registered ✅");
+            } else alert("Tag already registered");
+        };
+    } catch (err) { alert("Error: " + err); }
+}
+
+function removeTag(index) {
+    APPROVED_TAGS.splice(index,1);
+    localStorage.setItem("approvedTags", JSON.stringify(APPROVED_TAGS));
+    renderTagList();
+}
+
+// Log unlocks
+async function logUnlock(nickname) {
+    const entry = {nickname, timestamp: new Date().toLocaleString()};
+    unlockLog.push(entry);
+    localStorage.setItem("unlockLog", JSON.stringify(unlockLog));
+    renderLog();
+}
+
+function renderLog() {
+    const list = document.getElementById("logList");
+    list.innerHTML = "";
+    unlockLog.slice().reverse().forEach(entry => {
+        const li = document.createElement("li");
+        li.innerHTML = `<span>${entry.timestamp}</span>: ${entry.nickname}`;
+        list.appendChild(li);
+    });
+}
+
+// Clear all vault data
+async function clearVault() {
+    if (!confirm("Are you sure? This will delete ALL notes, files, tags, and logs!")) return;
+    await initDB();
+    const tx = db.transaction("vault", "readwrite");
+    const store = tx.objectStore("vault");
+    store.clear();
+    APPROVED_TAGS = [];
+    unlockLog = [];
+    fileData = [];
+    localStorage.removeItem("approvedTags");
+    localStorage.removeItem("unlockLog");
+    document.getElementById("notes").value = "";
+    document.getElementById("fileList").innerHTML = "";
+    renderTagList();
+    renderLog();
+    alert("Vault cleared 🗑️");
+    lock();
+}
+</script>
+</body>
+</html>
