@@ -1,0 +1,197 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>🔐 NFC Vault Ultimate</title>
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+<style>
+body {background:#0f172a;color:white;font-family:sans-serif;margin:0;}
+.container {padding:15px;max-width:600px;margin:auto;}
+button,input,textarea {
+  width:100%;padding:12px;margin:5px 0;border:none;border-radius:8px;font-size:16px;
+}
+button {background:#22c55e;color:black;font-weight:bold;}
+textarea {background:#111;color:white;height:150px;}
+.file-list {background:#111;padding:10px;border-radius:8px;max-height:200px;overflow:auto;}
+.file-item {display:flex;align-items:center;margin:5px 0;}
+.file-item img {max-width:60px;margin-right:10px;border-radius:6px;cursor:pointer;}
+.file-item button {background:red;color:white;margin-left:5px;}
+.card {background:#111;padding:12px;border-radius:10px;margin-top:10px;}
+ul {list-style:none;padding:0;}
+/* Unlock animation */
+@keyframes glow {
+0%{box-shadow:0 0 5px #22c55e;}
+50%{box-shadow:0 0 20px #22c55e;}
+100%{box-shadow:0 0 5px #22c55e;}
+}
+#vault.animate {animation:glow 1s;}
+/* Preview modal */
+#preview {
+display:none;position:fixed;top:0;left:0;width:100%;height:100%;
+background:rgba(0,0,0,0.95);justify-content:center;align-items:center;
+z-index:999;
+}
+#preview img {max-width:90%;max-height:90%;border-radius:10px;}
+</style>
+</head>
+
+<body>
+<div class="container">
+<h1>🔐 NFC Vault</h1>
+<p id="status">🔒 Locked</p>
+
+<button onclick="startScan()">Unlock with NFC</button>
+
+<input type="password" id="backupPass" placeholder="Backup Password">
+<button onclick="backupLogin()">Unlock with Password</button>
+
+<div id="vault" style="display:none;">
+
+<textarea id="notes" placeholder="Write notes..."></textarea>
+
+<input type="file" id="fileInput" multiple>
+<button onclick="addFiles()">Add Files</button>
+
+<div id="fileList" class="file-list"></div>
+
+<button onclick="saveAndLock()">Save & Lock 🔒</button>
+
+<!-- TAG MANAGER -->
+<div class="card">
+<h3>🔑 NFC Tag Manager</h3>
+<input type="password" id="regPass" placeholder="Password to register tag">
+<input type="text" id="tagName" placeholder="Tag nickname">
+<button onclick="scanForNewTag()">Add New Tag</button>
+<ul id="tagList"></ul>
+</div>
+
+<!-- LOG -->
+<div class="card">
+<h3>📜 Unlock Log</h3>
+<ul id="logList"></ul>
+</div>
+
+<!-- BACKUP -->
+<div class="card">
+<h3>💾 Backup & Restore</h3>
+<button onclick="backupVault()">Export Vault</button>
+<input type="file" id="restoreInput">
+<button onclick="restoreVault()">Restore Vault</button>
+</div>
+
+</div>
+</div>
+
+<!-- IMAGE PREVIEW -->
+<div id="preview" onclick="this.style.display='none'">
+<img id="previewImg">
+</div>
+
+<script>
+let tags = JSON.parse(localStorage.getItem("tags")||"[]");
+let files = JSON.parse(localStorage.getItem("files")||"[]");
+let logs = JSON.parse(localStorage.getItem("logs")||"[]");
+
+const PASSWORD="04292002";
+
+// NFC SCAN
+async function startScan(){
+if(!("NDEFReader" in window)){alert("NFC not supported");return;}
+const ndef=new NDEFReader();
+
+await ndef.scan();
+document.getElementById("status").innerText="Tap NFC tag...";
+
+ndef.onreading=e=>{
+let id=e.serialNumber.replace(/:/g,'').toUpperCase();
+
+if(tags.length===0){
+tags.push({id,name:"Owner"});
+saveTags();
+alert("First tag registered!");
+unlock("Owner NFC");
+return;
+}
+
+let found=tags.find(t=>t.id===id);
+if(found){
+unlock(found.name);
+}else{
+document.getElementById("status").innerText="❌ Wrong Tag";
+}
+};
+}
+
+// BACKUP LOGIN
+function backupLogin(){
+if(document.getElementById("backupPass").value===PASSWORD){
+unlock("Backup Login");
+}else alert("Wrong password ❌");
+}
+
+// UNLOCK
+function unlock(name){
+let vault=document.getElementById("vault");
+vault.style.display="block";
+vault.classList.add("animate");
+setTimeout(()=>vault.classList.remove("animate"),1000);
+
+document.getElementById("status").innerText="✅ "+name;
+loadVault();
+
+logs.push({name,time:new Date().toLocaleString()});
+localStorage.setItem("logs",JSON.stringify(logs));
+renderLogs();
+}
+
+// LOCK
+function saveAndLock(){
+saveVault();
+document.getElementById("vault").style.display="none";
+document.getElementById("status").innerText="🔒 Locked";
+}
+
+// SAVE / LOAD
+function saveVault(){
+localStorage.setItem("notes",document.getElementById("notes").value);
+localStorage.setItem("files",JSON.stringify(files));
+}
+function loadVault(){
+document.getElementById("notes").value=localStorage.getItem("notes")||"";
+files=JSON.parse(localStorage.getItem("files")||"[]");
+renderFiles();
+renderTags();
+renderLogs();
+}
+
+// FILES
+function addFiles(){
+let input=document.getElementById("fileInput");
+for(let f of input.files){
+let reader=new FileReader();
+reader.onload=e=>{
+files.push({name:f.name,type:f.type,data:e.target.result});
+renderFiles();
+};
+reader.readAsDataURL(f);
+}
+input.value="";
+}
+
+function renderFiles(){
+let list=document.getElementById("fileList");
+list.innerHTML="";
+files.forEach((f,i)=>{
+let div=document.createElement("div");
+div.className="file-item";
+
+if(f.type.startsWith("image")){
+let img=document.createElement("img");
+img.src=f.data;
+img.onclick=()=>{
+document.getElementById("previewImg").src=f.data;
+document.getElementById("preview").style.display="flex";
+};
+div.appendChild(img);
+}
